@@ -1,0 +1,142 @@
+services:
+  # Telegram Bot Backend
+  backend:
+    build: ./backend
+    container_name: ai_publisher_backend
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ORCHESTRATOR_URL=http://orchestrator:8000
+      - UPLOAD_DIR=/data/uploads
+      - WORKDIR=/data/workdir
+      - OUTPUT_DIR=/data/outputs
+      - HTTP_TIMEOUT=1200.0
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+
+  # Orchestrator - координирует все сервисы
+  orchestrator:
+    build: ./orchestrator
+    container_name: ai_publisher_orchestrator
+    ports:
+      - "8001:8000"
+    environment:
+      - SILENCE_CUTTER_URL=http://silence_cutter:8000
+      - TRANSCRIBER_URL=http://transcriber:8000
+      - CHECKING_TERMS_URL=http://checking_terms:8000
+      - TEXT_GENERATOR_URL=http://text_generator:8000
+      - THUMBNAIL_GENERATOR_URL=http://thumbnail_generator:8000
+      - HTTP_TIMEOUT=1200.0
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+    depends_on:
+      - silence_cutter
+      - transcriber
+      - checking_terms
+      - text_generator
+      - thumbnail_generator
+    restart: unless-stopped
+
+  # Silence Cutter - удаление пауз
+  silence_cutter:
+    build: ./silence_cutter
+    container_name: ai_publisher_silence_cutter
+    environment:
+      - WORKDIR=/data/workdir
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+    restart: unless-stopped
+
+  # Transcriber - транскрибация видео (GPU)
+  transcriber:
+    build: ./transcriber
+    container_name: ai_publisher_transcriber
+    environment:
+      - MODEL_SIZE=medium
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Checking Terms - проверка на соответствие пользовательскому соглашению
+  checking_terms:
+    build: ./checking_terms
+    container_name: ai_publisher_checking_terms
+    environment:
+      - TINY2_MODEL_PATH=/app/models/cointegrated_rubert_tiny2
+      - BASE_MODEL_PATH=/app/models/rubert-base-cased
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+    restart: unless-stopped
+
+  # Text Generator - генерация контента для YouTube и Telegram
+  text_generator:
+    build: ./text_generator
+    container_name: ai_publisher_text_generator
+    ports:
+      - "8004:8000"
+    environment:
+      - N_CTX=4096
+      - N_THREADS=6
+      - LOG_LEVEL=INFO
+      - N_GPU_LAYERS=-1
+      - NVIDIA_VISIBLE_DEVICES=0
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+      - ./llm_models:/app/llm_models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Thumbnail Generator - генерация обложек для видео
+  thumbnail_generator:
+    build: ./thumbnail_generator
+    container_name: ai_publisher_thumbnail_generator
+    ports:
+      - "8005:8000"
+    environment:
+      - N_THUMBNAILS=3
+      - LOG_LEVEL=INFO
+    volumes:
+      # Для отладки: bind mount (папка в корне проекта)
+      - ./data:/data
+      # Для прода: named volume (в кэше докера)
+      # - shared_data:/data
+    restart: unless-stopped
+
+volumes:
+  shared_data:
+    driver: local
