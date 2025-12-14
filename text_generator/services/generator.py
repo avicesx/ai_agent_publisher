@@ -63,7 +63,7 @@ def generate_youtube_title(transcript: str) -> str:
 def generate_youtube_description(transcript: str) -> str:
     """Генерация краткого описания для YouTube"""
     prompt = f"""
-Дай краткое описание смысла видео 1 или 2 предложения:
+Кратко опиши смысл видео одним предложением.
 {transcript}
 """
     return ask_llm(prompt).strip()
