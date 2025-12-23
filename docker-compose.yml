@@ -1,10 +1,24 @@
 services:
+  # Local Telegram Bot API Server - снимает ограничение 20/50 МБ на файлы
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: ai_publisher_telegram_api
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_LOCAL=true
+    volumes:
+      # Named volume для данных Bot API (bind mount не работает из-за ':' в пути)
+      - telegram_bot_api_data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+
   # Telegram Bot Backend
   backend:
     build: ./backend
     container_name: ai_publisher_backend
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
+      - TELEGRAM_API_URL=http://telegram-bot-api:8081
       - ORCHESTRATOR_URL=http://orchestrator:8000
       - UPLOAD_DIR=/data/uploads
       - WORKDIR=/data/workdir
@@ -12,10 +26,12 @@ services:
       - HTTP_TIMEOUT=1200.0
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
+      - telegram_bot_api_data:/var/lib/telegram-bot-api
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
+      - shared_data:/data
     depends_on:
+      - telegram-bot-api
       - orchestrator
     restart: unless-stopped
 
@@ -34,9 +50,9 @@ services:
       - HTTP_TIMEOUT=1200.0
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
+      - shared_data:/data
     depends_on:
       - silence_cutter
       - transcriber
@@ -53,9 +69,9 @@ services:
       - WORKDIR=/data/workdir
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
+      - shared_data:/data
     restart: unless-stopped
 
   # Transcriber - транскрибация видео (GPU)
@@ -67,17 +83,17 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
-    # GPU support
+      - shared_data:/data
+      # GPU support
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     restart: unless-stopped
 
   # Checking Terms - проверка на соответствие пользовательскому соглашению
@@ -89,9 +105,9 @@ services:
       - BASE_MODEL_PATH=/app/models/rubert-base-cased
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
+      - shared_data:/data
     restart: unless-stopped
 
   # Text Generator - генерация контента для YouTube и Telegram
@@ -108,9 +124,9 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
+      - shared_data:/data
       - ./llm_models:/app/llm_models
     deploy:
       resources:
@@ -118,7 +134,7 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     restart: unless-stopped
 
   # Thumbnail Generator - генерация обложек для видео
@@ -132,11 +148,13 @@ services:
       - LOG_LEVEL=INFO
     volumes:
       # Для отладки: bind mount (папка в корне проекта)
-      - ./data:/data
+      # - ./data:/data
       # Для прода: named volume (в кэше докера)
-      # - shared_data:/data
+      - shared_data:/data
     restart: unless-stopped
 
 volumes:
   shared_data:
+    driver: local
+  telegram_bot_api_data:
     driver: local

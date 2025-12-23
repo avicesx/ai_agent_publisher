@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
 RUN pip install --no-cache-dir \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 \
     llama-cpp-python
 
 WORKDIR /app

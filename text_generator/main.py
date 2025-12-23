@@ -44,20 +44,25 @@ async def generate_content(request: GenerateRequest):
         Сгенерированный контент для обеих платформ
     """
     try:
-        logger.info(f"Генерация контента, формат: {request.post_format}")
+        logger.info(f"Генерация контента, формат: {request.post_format}, платформы: {request.platforms}")
         
-        # генерация YouTube контента
-        youtube = YouTubeContent(
-            title=generate_youtube_title(request.transcript),
-            description=generate_youtube_description(request.transcript),
-            tags=generate_tags(request.transcript)
-        )
+        youtube = None
+        telegram = None
+
+        if "youtube" in request.platforms:
+            # генерация YouTube контента
+            youtube = YouTubeContent(
+                title=generate_youtube_title(request.transcript, request.post_format, request.custom_prompt),
+                description=generate_youtube_description(request.transcript, request.post_format, request.custom_prompt),
+                tags=generate_tags(request.transcript)
+            )
         
-        # генерация Telegram контента
-        telegram = TelegramContent(
-            title=generate_telegram_title(request.transcript),
-            post=generate_telegram_post(request.transcript, request.post_format)
-        )
+        if "telegram" in request.platforms:
+            # генерация Telegram контента
+            telegram = TelegramContent(
+                title=generate_telegram_title(request.transcript, request.post_format, request.custom_prompt),
+                post=generate_telegram_post(request.transcript, request.post_format, request.custom_prompt)
+            )
         
         logger.info("Контент успешно сгенерирован")
         return GenerateResponse(youtube=youtube, telegram=telegram)

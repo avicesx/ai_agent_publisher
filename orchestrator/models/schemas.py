@@ -22,4 +22,6 @@ class Job(BaseModel):
 
 class ProcessRequest(BaseModel):
     video_path: str
-    platform: str = "youtube"
+    platforms: list[str] = ["youtube", "telegram"]
+    post_format: str = "neutral"
+    custom_prompt: Optional[str] = None

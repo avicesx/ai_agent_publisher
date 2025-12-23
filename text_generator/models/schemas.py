@@ -1,10 +1,12 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 
 class GenerateRequest(BaseModel):
     transcript: str
     post_format: str = "neutral"
+    custom_prompt: Optional[str] = None
+    platforms: List[str] = ["youtube", "telegram"]
 
 
 class YouTubeContent(BaseModel):
@@ -19,5 +21,5 @@ class TelegramContent(BaseModel):
 
 
 class GenerateResponse(BaseModel):
-    youtube: YouTubeContent
-    telegram: TelegramContent
+    youtube: Optional[YouTubeContent] = None
+    telegram: Optional[TelegramContent] = None

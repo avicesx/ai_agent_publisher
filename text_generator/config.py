@@ -10,8 +10,8 @@ N_THREADS = int(os.getenv("N_THREADS", "6"))
 N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "-1"))
 
 # параметры генерации
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0.4"))
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
 TOP_P = float(os.getenv("TOP_P", "0.8"))
 
 # логирование

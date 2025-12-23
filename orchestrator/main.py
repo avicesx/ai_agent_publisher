@@ -1,8 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 import shutil
 import uuid
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 import logging
 import uvicorn
 import config
@@ -32,18 +32,27 @@ async def log_requests(request: Request, call_next):
 jobs: Dict[str, Job] = {}
 
 
-async def process_task_background(job_id: str, input_path: Path):
+async def process_task_background(job_id: str, input_path: Path, platforms: List[str], post_format: str, custom_prompt: Optional[str]):
     """Фоновая задача для обработки"""
     job = jobs[job_id]
-    jobs[job_id] = await process_pipeline(job, input_path)
+    try:
+        jobs[job_id] = await process_pipeline(job, input_path, platforms=platforms, post_format=post_format, custom_prompt=custom_prompt)
+    except Exception as e:
+        logger.error(f"Background task failed for {job_id}: {e}")
+        job.status = JobStatus.FAILED
+        job.message = f"Ошибка обработки: {str(e)}"
 
 
 @app.post("/jobs", response_model=Job)
-async def create_job(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def create_job(
+    background_tasks: BackgroundTasks, 
+    file: UploadFile = File(...),
+    platforms: List[str] = Form(["youtube", "telegram"]),
+    post_format: str = Form("neutral"),
+    custom_prompt: Optional[str] = Form(None)
+):
     """
     Загрузить файл и запустить обработку в фоне
-    Returns:
-        Job с id и статусом
     """
     try:
         job_id = str(uuid.uuid4())
@@ -51,6 +60,7 @@ async def create_job(background_tasks: BackgroundTasks, file: UploadFile = File(
         input_path = config.UPLOAD_DIR / input_filename
         
         logger.info(f"Получен файл: {file.filename} -> {input_path}")
+        logger.info(f"Параметры: platforms={platforms}, format={post_format}, custom_prompt={custom_prompt}")
         
         with open(input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -62,7 +72,7 @@ async def create_job(background_tasks: BackgroundTasks, file: UploadFile = File(
         )
         jobs[job_id] = job
         
-        background_tasks.add_task(process_task_background, job_id, input_path)
+        background_tasks.add_task(process_task_background, job_id, input_path, platforms, post_format, custom_prompt)
         
         logger.info(f"Задание {job_id} поставлено в очередь")
         return job
@@ -84,11 +94,6 @@ async def get_job_status(job_id: str):
 async def process_video(request: ProcessRequest):
     """
     Синхронная обработка видео
-    
-    Args:
-        request: Путь к видео файлу и платформа
-    Returns:
-        Job с результатами обработки
     """
     job_id = str(uuid.uuid4())
     input_path = Path(request.video_path)
@@ -96,9 +101,16 @@ async def process_video(request: ProcessRequest):
     job = Job(id=job_id, status=JobStatus.PENDING)
     jobs[job_id] = job
     
-    jobs[job_id] = await process_pipeline(job, input_path, platform=request.platform)
-    
+    jobs[job_id] = await process_pipeline(
+        job, 
+        input_path, 
+        platforms=request.platforms, 
+        post_format=request.post_format, 
+        custom_prompt=request.custom_prompt
+    )
     return jobs[job_id]
+    
+
 
 
 @app.get("/health")
