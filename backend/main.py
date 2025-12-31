@@ -11,11 +11,14 @@ import logging
 import config
 from services import OrchestratorClient
 from utils import download_video
-from database import init_db, get_settings, update_settings
-
-
-user_states = {}
-
+from database import (
+    init_db, get_settings, update_settings,
+    add_api_key, get_api_keys, delete_api_key, get_api_key_by_id,
+    add_scenario, get_scenarios, delete_scenario, get_scenario_by_id
+)
+from publishers.youtube import publish_to_youtube_draft, save_credentials as save_yt_creds
+from publishers.vk import publish_to_vk_draft
+from publishers.telegram import publish_to_telegram_channel
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
@@ -34,19 +37,15 @@ bot = AsyncTeleBot(config.BOT_TOKEN)
 orchestrator_client = OrchestratorClient()
 
 user_states = {}
-user_status_messages = {} # {user_id: message_id}
+user_status_messages = {}
 
 async def send_status(user_id: int, text: str, parse_mode=None):
-    """
-    Отправляет статусное сообщение, удаляя предыдущее.
-    """
     try:
         if user_id in user_status_messages:
             try:
                 await bot.delete_message(user_id, user_status_messages[user_id])
             except Exception as e:
                 logger.debug(f"Не удалось удалить сообщение {user_status_messages[user_id]}: {e}")
-        
         msg = await bot.send_message(user_id, text, parse_mode=parse_mode)
         user_status_messages[user_id] = msg.message_id
         return msg
@@ -54,10 +53,7 @@ async def send_status(user_id: int, text: str, parse_mode=None):
         logger.error(f"Ошибка в send_status: {e}")
         return await bot.send_message(user_id, text, parse_mode=parse_mode)
 
-
-
 def get_video_dimensions(video_path: str) -> tuple:
-    """Получает ширину и высоту видео через ffprobe"""
     try:
         cmd = [
             "ffprobe", "-v", "error",
@@ -73,32 +69,37 @@ def get_video_dimensions(video_path: str) -> tuple:
     except Exception:
         return 0, 0
 
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ UI ===
+def get_scenarios_menu(user_id):
+    scenarios = get_scenarios(user_id)
+    markup = types.InlineKeyboardMarkup()
+    for s_id, name, platform, content_type, fmt in scenarios:
+        markup.row(types.InlineKeyboardButton(
+            f"🎭 {name}",
+            callback_data=f"select_scenario_{s_id}"
+        ))
+    markup.row(types.InlineKeyboardButton("➕ Создать сценарий", callback_data="create_scenario"))
+    markup.row(types.InlineKeyboardButton("🗑 Удалить сценарий", callback_data="delete_scenario"))
+    markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main"))
+    return markup
 
-@bot.message_handler(commands=['start'])
-async def start(message):
-    if message.from_user.is_bot:
-        return
-    user_id = message.from_user.id
-    user_states[user_id] = None
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("🎬 Обработать видео")
-    btn2 = types.KeyboardButton("⚙️ Настройки")
-    markup.add(btn1, btn2)
-    await bot.send_message(
-        user_id,
-        "👋 Привет! Я бот для обработки видео.\n\n"
-        "Отправь ссылку на видео — я удалю паузы, создам транскрибацию "
-        "и проверю на соответствие политике YouTube!",
-        reply_markup=markup
-    )
-
+def get_api_keys_menu(user_id):
+    keys = get_api_keys(user_id)
+    markup = types.InlineKeyboardMarkup()
+    for k_id, name, platform in keys:
+        markup.row(types.InlineKeyboardButton(
+            f"🔑 {name} ({platform})",
+            callback_data=f"view_key_{k_id}"
+        ))
+    markup.row(types.InlineKeyboardButton("➕ Добавить ключ", callback_data="add_api_key"))
+    markup.row(types.InlineKeyboardButton("🗑 Удалить ключ", callback_data="delete_api_key"))
+    markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main"))
+    return markup
 
 def get_settings_ui(user_id):
-    """Генерация текста и клавиатуры настроек"""
     settings = get_settings(user_id)
     markup = types.InlineKeyboardMarkup()
     
-    # Платформа
     platforms = settings.get("platform", "all")
     btn_youtube = types.InlineKeyboardButton(
         f"{'✅ ' if platforms in ['youtube', 'all'] else ''}YouTube", 
@@ -110,7 +111,6 @@ def get_settings_ui(user_id):
     )
     markup.row(btn_youtube, btn_telegram)
     
-    # Формат поста
     current_format = settings.get("post_format", "neutral")
     formats = {
         "neutral": "Нейтральный",
@@ -129,7 +129,6 @@ def get_settings_ui(user_id):
     if row_btns:
         markup.row(*row_btns)
         
-    # Кастомный промт
     custom_prompt = settings.get("custom_prompt")
     prompt_text = "✏️ Задать свой промт" if not custom_prompt else "✏️ Изменить промт"
     markup.row(types.InlineKeyboardButton(prompt_text, callback_data="set_custom_prompt"))
@@ -147,6 +146,24 @@ def get_settings_ui(user_id):
         
     return text, markup
 
+# === КОМАНДЫ ===
+@bot.message_handler(commands=['start'])
+async def start(message):
+    if message.from_user.is_bot:
+        return
+    user_id = message.from_user.id
+    user_states[user_id] = None
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("🎬 Обработать видео")
+    markup.add("🎭 Сценарии", "🔑 API-ключи")
+    markup.add("⚙️ Настройки")
+    await bot.send_message(
+        user_id,
+        "👋 Привет! Я бот для обработки видео.\n\n"
+        "Отправь ссылку — я удалю паузы, создам транскрибацию "
+        "и проверю на соответствие политике YouTube!",
+        reply_markup=markup
+    )
 
 @bot.message_handler(commands=['settings'])
 async def settings_command(message):
@@ -156,11 +173,225 @@ async def settings_command(message):
     text, markup = get_settings_ui(user_id)
     await bot.send_message(user_id, text, reply_markup=markup, parse_mode="Markdown")
 
+# === МЕНЮ КНОПОК ===
+@bot.message_handler(func=lambda msg: msg.text == "🎭 Сценарии")
+async def scenarios_menu(message):
+    user_id = message.from_user.id
+    markup = get_scenarios_menu(user_id)
+    await bot.send_message(user_id, "🎭 Управление сценариями:", reply_markup=markup)
 
+@bot.message_handler(func=lambda msg: msg.text == "🔑 API-ключи")
+async def api_keys_menu(message):
+    user_id = message.from_user.id
+    markup = get_api_keys_menu(user_id)
+    await bot.send_message(user_id, "🔑 Управление API-ключами:", reply_markup=markup)
+
+# === CALLBACK'И ===
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
+async def back_to_main(call):
+    user_id = call.from_user.id
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("🎬 Обработать видео")
+    markup.add("🎭 Сценарии", "🔑 API-ключи")
+    markup.add("⚙️ Настройки")
+    await bot.send_message(user_id, "Главное меню:", reply_markup=markup)
+    await bot.answer_callback_query(call.id)
+
+# Сценарии
+@bot.callback_query_handler(func=lambda call: call.data == "create_scenario")
+async def start_create_scenario(call):
+    user_id = call.from_user.id
+    user_states[user_id] = "waiting_scenario_name"
+    await bot.send_message(user_id, "✏️ Введите название сценария:")
+    await bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("select_scenario_"))
+async def select_scenario_for_publish(call):
+    user_id = call.from_user.id
+    scenario_id = int(call.data.split("_")[-1])
+    scenario = get_scenario_by_id(scenario_id, user_id)
+    if scenario:
+        user_states[user_id] = f"publish_with_{scenario_id}"
+        await bot.send_message(
+            user_id,
+            f"✅ Выбран сценарий: *{scenario['name']}*\n"
+            f"Платформа: {scenario['platform']}\n"
+            f"Тип: {scenario['content_type']}\n"
+            f"Формат: {scenario['format']}\n\n"
+            "Теперь отправьте видео для публикации.",
+            parse_mode="Markdown"
+        )
+    else:
+        await bot.send_message(user_id, "❌ Сценарий не найден.")
+    await bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "delete_scenario")
+async def delete_scenario_start(call):
+    user_id = call.from_user.id
+    scenarios = get_scenarios(user_id)
+    if not scenarios:
+        await bot.send_message(user_id, "Нет сценариев для удаления.")
+        return
+    markup = types.InlineKeyboardMarkup()
+    for s_id, name, _, _, _ in scenarios:
+        markup.row(types.InlineKeyboardButton(name, callback_data=f"confirm_del_scenario_{s_id}"))
+    markup.row(types.InlineKeyboardButton("Отмена", callback_data="back_to_main"))
+    await bot.send_message(user_id, "Выберите сценарий для удаления:", reply_markup=markup)
+    await bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_scenario_"))
+async def confirm_delete_scenario(call):
+    user_id = call.from_user.id
+    s_id = int(call.data.split("_")[-1])
+    delete_scenario(s_id, user_id)
+    await bot.send_message(user_id, "🗑 Сценарий удалён.")
+    await bot.answer_callback_query(call.id)
+
+# API-ключи
+@bot.callback_query_handler(func=lambda call: call.data == "add_api_key")
+async def start_add_api_key(call):
+    user_id = call.from_user.id
+    user_states[user_id] = "waiting_api_key_name"
+    await bot.send_message(user_id, "✏️ Введите название ключа (например: 'Мой YouTube канал'):")
+    await bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "delete_api_key")
+async def delete_api_key_start(call):
+    user_id = call.from_user.id
+    keys = get_api_keys(user_id)
+    if not keys:
+        await bot.send_message(user_id, "Нет ключей для удаления.")
+        return
+    markup = types.InlineKeyboardMarkup()
+    for k_id, name, _ in keys:
+        markup.row(types.InlineKeyboardButton(name, callback_data=f"confirm_del_key_{k_id}"))
+    markup.row(types.InlineKeyboardButton("Отмена", callback_data="back_to_main"))
+    await bot.send_message(user_id, "Выберите ключ для удаления:", reply_markup=markup)
+    await bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_key_"))
+async def confirm_delete_key(call):
+    user_id = call.from_user.id
+    k_id = int(call.data.split("_")[-1])
+    delete_api_key(k_id, user_id)
+    await bot.send_message(user_id, "🗑 Ключ удалён.")
+    await bot.answer_callback_query(call.id)
+
+# Выбор платформы для сценария
+@bot.callback_query_handler(func=lambda call: call.data.startswith("scen_platform_"))
+async def select_scenario_platform(call):
+    user_id = call.from_user.id
+    platform = call.data.split("_")[-1]
+    name = user_states[user_id][1]
+    user_states[user_id] = ("waiting_scenario_content_type", name, platform)
+    
+    content_types = []
+    if platform == "youtube":
+        content_types = ["shorts", "video"]
+    elif platform == "vk":
+        content_types = ["clip"]
+    else:  # telegram
+        content_types = ["post", "video"]
+    
+    markup = types.InlineKeyboardMarkup()
+    for ct in content_types:
+        markup.row(types.InlineKeyboardButton(ct, callback_data=f"scen_ct_{ct}"))
+    await bot.send_message(user_id, "Выберите тип контента:", reply_markup=markup)
+    await bot.answer_callback_query(call.id)
+
+# Выбор типа контента
+@bot.callback_query_handler(func=lambda call: call.data.startswith("scen_ct_"))
+async def select_scenario_content_type(call):
+    user_id = call.from_user.id
+    content_type = call.data.split("_")[-1]
+    name, platform = user_states[user_id][1], user_states[user_id][2]
+    user_states[user_id] = ("waiting_scenario_format", name, platform, content_type)
+    
+    formats = ["warming", "neutral", "selling", "custom"]
+    markup = types.InlineKeyboardMarkup()
+    for fmt in formats:
+        markup.row(types.InlineKeyboardButton(fmt, callback_data=f"scen_fmt_{fmt}"))
+    await bot.send_message(user_id, "Выберите формат:", reply_markup=markup)
+    await bot.answer_callback_query(call.id)
+
+# Выбор формата
+@bot.callback_query_handler(func=lambda call: call.data.startswith("scen_fmt_"))
+async def select_scenario_format(call):
+    user_id = call.from_user.id
+    fmt = call.data.split("_")[-1]
+    name, platform, content_type = user_states[user_id][1], user_states[user_id][2], user_states[user_id][3]
+    add_scenario(user_id, name, platform, content_type, fmt)
+    await bot.send_message(user_id, "✅ Сценарий сохранён!")
+    user_states[user_id] = None
+    await bot.answer_callback_query(call.id)
+
+# Выбор платформы для ключа
+@bot.callback_query_handler(func=lambda call: call.data.startswith("key_platform_"))
+async def select_api_key_platform(call):
+    user_id = call.from_user.id
+    platform = call.data.split("_")[-1]
+    name = user_states[user_id][1]
+    user_states[user_id + "_key_meta"] = (name, platform)
+    user_states[user_id] = "waiting_api_key_value"
+    await bot.send_message(user_id, "🔑 Введите API-ключ (токен):")
+    await bot.answer_callback_query(call.id)
+
+# === СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ YOUTUBE ===
+@bot.callback_query_handler(func=lambda call: call.data == "key_platform_youtube")
+async def handle_youtube_key(call):
+    user_id = call.from_user.id
+    name = user_states[user_id][1]
+    await bot.send_message(
+        user_id,
+        "📌 Для YouTube требуется JSON с данными OAuth2.\n"
+        "Пришлите файл credentials.json или вставьте содержимое JSON."
+    )
+    user_states[user_id] = "waiting_youtube_json"
+    user_states[user_id + "_key_meta"] = (name, "youtube")
+    await bot.answer_callback_query(call.id)
+
+@bot.message_handler(content_types=['document'], func=lambda msg: user_states.get(msg.from_user.id) == "waiting_youtube_json")
+async def handle_youtube_json_file(message):
+    user_id = message.from_user.id
+    if not message.document.file_name.endswith('.json'):
+        await bot.send_message(user_id, "Пожалуйста, отправьте JSON-файл.")
+        return
+    
+    try:
+        file_info = await bot.get_file(message.document.file_id)
+        downloaded = await bot.download_file(file_info.file_path)
+        json_content = downloaded.decode('utf-8')
+        json.loads(json_content)  # проверка валидности
+        
+        name, platform = user_states[user_id + "_key_meta"]
+        save_yt_creds(user_id, json_content)
+        add_api_key(user_id, name, platform, "oauth2_refresh_token_saved")
+        await bot.send_message(user_id, "✅ YouTube ключ сохранён!")
+        user_states[user_id] = None
+        user_states.pop(user_id + "_key_meta", None)
+    except Exception as e:
+        await bot.send_message(user_id, f"❌ Ошибка: {e}")
+
+@bot.message_handler(func=lambda msg: user_states.get(msg.from_user.id) == "waiting_youtube_json")
+async def handle_youtube_json_text(message):
+    user_id = message.from_user.id
+    try:
+        json_content = message.text
+        json.loads(json_content)
+        name, platform = user_states[user_id + "_key_meta"]
+        save_yt_creds(user_id, json_content)
+        add_api_key(user_id, name, platform, "oauth2_refresh_token_saved")
+        await bot.send_message(user_id, "✅ YouTube ключ сохранён!")
+        user_states[user_id] = None
+        user_states.pop(user_id + "_key_meta", None)
+    except Exception as e:
+        await bot.send_message(user_id, f"❌ Неверный JSON: {e}")
+
+# Старые настройки
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_platform_'))
 async def callback_platform(call):
     user_id = call.from_user.id
-    action = call.data.split('_')[2]  # youtube или telegram
+    action = call.data.split('_')[2]
     current = get_settings(user_id).get("platform", "all")
     
     platforms_set = set(["youtube", "telegram"]) if current == "all" else {current}
@@ -182,7 +413,6 @@ async def callback_platform(call):
         
     update_settings(user_id, platform=final_platform)
     
-    # Обновляем сообщение вместо отправки нового
     text, markup = get_settings_ui(user_id)
     try:
         await bot.edit_message_text(
@@ -194,9 +424,7 @@ async def callback_platform(call):
         )
     except Exception as e:
         logger.debug(f"Message not modified: {e}")
-        
     await bot.answer_callback_query(call.id)
-
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_format_'))
 async def callback_format(call):
@@ -215,17 +443,14 @@ async def callback_format(call):
         )
     except Exception as e:
         logger.debug(f"Message not modified: {e}")
-        
     await bot.answer_callback_query(call.id)
-
 
 @bot.callback_query_handler(func=lambda call: call.data == 'set_custom_prompt')
 async def callback_custom_prompt(call):
     user_id = call.from_user.id
     user_states[user_id] = "waiting_prompt"
-    await bot.send_message(user_id, "✍️ Напишите инструкцию для генерации текста (например: 'Пиши как пират', 'Делай акцент на цифрах').")
+    await bot.send_message(user_id, "✍️ Напишите инструкцию для генерации текста...")
     await bot.answer_callback_query(call.id)
-
 
 @bot.callback_query_handler(func=lambda call: call.data == 'clear_custom_prompt')
 async def callback_clear_prompt(call):
@@ -243,47 +468,75 @@ async def callback_clear_prompt(call):
         )
     except Exception as e:
         logger.debug(f"Message not modified: {e}")
-        
     await bot.answer_callback_query(call.id)
 
-
+# === ОБРАБОТКА ТЕКСТА ===
 @bot.message_handler(content_types=['text'])
 async def handle_text(message):
     if message.from_user.is_bot:
         return
     user_id = message.from_user.id
-    
-    if user_states.get(user_id) == "waiting_prompt":
-        update_settings(user_id, custom_prompt=message.text)
+    text = message.text.strip()
+    state = user_states.get(user_id)
+
+    # Сценарии
+    if state == "waiting_scenario_name":
+        user_states[user_id] = ("waiting_scenario_platform", text)
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("YouTube", callback_data="scen_platform_youtube"),
+            types.InlineKeyboardButton("VK", callback_data="scen_platform_vk")
+        )
+        markup.row(types.InlineKeyboardButton("Telegram", callback_data="scen_platform_telegram"))
+        await bot.send_message(user_id, "Выберите платформу:", reply_markup=markup)
+        return
+
+    # API-ключи
+    elif state == "waiting_api_key_name":
+        user_states[user_id] = ("waiting_api_key_platform", text)
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton("YouTube", callback_data="key_platform_youtube"),
+            types.InlineKeyboardButton("VK", callback_data="key_platform_vk")
+        )
+        markup.row(types.InlineKeyboardButton("Telegram", callback_data="key_platform_telegram"))
+        await bot.send_message(user_id, "Выберите платформу:", reply_markup=markup)
+        return
+
+    elif state == "waiting_api_key_value":
+        meta_key = user_id + "_key_meta"
+        if meta_key in user_states:
+            name, platform = user_states[meta_key]
+            add_api_key(user_id, name, platform, text)
+            await bot.send_message(user_id, "✅ Ключ сохранён!")
+            user_states[user_id] = None
+            user_states.pop(meta_key, None)
+        return
+
+    # Кастомный промт
+    elif state == "waiting_prompt":
+        update_settings(user_id, custom_prompt=text)
         user_states[user_id] = None
         await bot.send_message(user_id, "✅ Промт сохранен!")
         await settings_command(message)
         return
 
-    if message.text == "⚙️ Настройки":
+    # Стандартные кнопки
+    if text == "⚙️ Настройки":
         await settings_command(message)
-    
-    elif message.text == "🎬 Обработать видео":
+    elif text == "🎬 Обработать видео":
         user_states[user_id] = 'waiting_for_link'
-        await bot.send_message(
-            user_id,
-            "📎 Отправь ссылку на видео или видеофайл"
-        )
-    
-    elif user_states.get(user_id) == 'waiting_for_link':
+        await bot.send_message(user_id, "📎 Отправь ссылку на видео или видеофайл")
+    elif state == "waiting_for_link":
         user_states[user_id] = None
-        url = message.text.strip()
-        
+        url = text.strip()
         if not url:
             await bot.send_message(user_id, "❌ Ссылка не может быть пустой.")
             return
-        
         if not re.match(r'^https?://', url):
             await bot.send_message(user_id, "❌ Нужна ссылка, начинающаяся с http:// или https://")
             return
-        
         await send_status(user_id, "⏳ Начинаю обработку видео...\n1️⃣ Скачивание...")
-        
         try:
             await process_video_workflow(user_id, url)
         except Exception as e:
@@ -294,18 +547,18 @@ async def handle_text(message):
                 "Попробуйте другую ссылку или обратитесь в поддержку."
             )
 
-
+# === ОБРАБОТКА ФАЙЛОВ ===
 @bot.message_handler(content_types=['video', 'document'])
 async def handle_video_or_document(message):
-    """Обработка видео, отправленного напрямую в Telegram"""
     if message.from_user.is_bot:
         return
     user_id = message.from_user.id
     
-    if user_states.get(user_id) != 'waiting_for_link':
+    expected_state = user_states.get(user_id)
+    if expected_state not in ['waiting_for_link'] and not (isinstance(expected_state, str) and expected_state.startswith("publish_with_")):
         await bot.send_message(
             user_id,
-            "📎 Сначала нажмите кнопку '🎬 Обработать видео', затем отправьте файл."
+            "📎 Сначала нажмите '🎬 Обработать видео' или выберите сценарий для публикации."
         )
         return
     
@@ -330,7 +583,7 @@ async def handle_video_or_document(message):
                 ext = mime_type.split('/')[-1] or 'mp4'
             file_name = f"tg_video_{user_id}_{uuid.uuid4()}.{ext}"
         else:
-            await bot.send_message(user_id, "📎 Я обрабатываю только видео. Этот документ не является видео.")
+            await bot.send_message(user_id, "📎 Я обрабатываю только видео.")
             return
     else:
         return
@@ -339,17 +592,14 @@ async def handle_video_or_document(message):
     
     try:
         file_info = await bot.get_file(file_id)
-        logger.info(f"Получена информация о файле: {file_info}")
         save_path = os.path.join(config.UPLOAD_DIR, file_name)
         
         if config.TELEGRAM_API_URL and file_info.file_path.startswith('/'):
             local_file_path = file_info.file_path
-            logger.info(f"Попытка прямого копирования из: {local_file_path}")
             if os.path.exists(local_file_path):
                 shutil.copy(local_file_path, save_path)
                 logger.info(f"Скопирован файл из локального Bot API: {local_file_path}")
             else:
-                logger.warning(f"Файл не найден локально: {local_file_path}, скачиваю через API")
                 downloaded_file = await bot.download_file(file_info.file_path)
                 with open(save_path, 'wb') as f:
                     f.write(downloaded_file)
@@ -359,22 +609,54 @@ async def handle_video_or_document(message):
                 f.write(downloaded_file)
         
         logger.info(f"Сохранено видео от пользователя {user_id}: {save_path}")
-        
         await process_video_from_path(user_id, save_path)
         
     except Exception as e:
-        logger.error(f"Ошибка скачивания видео из Telegram: {e}", exc_info=True)
-        await send_status(
-            user_id,
-            f"❌ Не удалось скачать видео: {str(e)}\n\n"
-            "Попробуйте отправить видео ещё раз или используйте ссылку."
-        )
+        logger.error(f"Ошибка скачивания видео: {e}", exc_info=True)
+        await send_status(user_id, f"❌ Не удалось скачать видео: {str(e)}")
 
+# === ФУНКЦИЯ ПУБЛИКАЦИИ ===
+async def publish_to_draft(user_id: int, scenario: dict, result):
+    """Публикует результат по сценарию"""
+    platform = scenario["platform"]
+    content_type = scenario["content_type"]
+    
+    # Получаем контент
+    content = result.generated_content.get(platform, {}).get("content", {})
+    title = content.get("title", "Без названия")[:100]
+    description = content.get("description", content.get("post", ""))[:5000]
+    tags = content.get("tags", [])
+    video_path = result.processed_video_path
+    
+    # Получаем ключ
+    keys = [k for k in get_api_keys(user_id) if k[2] == platform]
+    if not keys:
+        await bot.send_message(user_id, f"❌ Нет API-ключа для {platform}. Добавьте в настройках.")
+        return
+    
+    try:
+        if platform == "youtube":
+            link = await publish_to_youtube_draft(user_id, video_path, title, description, tags, content_type)
+            await bot.send_message(user_id, f"✅ Видео отправлено в черновики YouTube:\n{link}")
+        
+        elif platform == "vk":
+            access_token = get_api_key_by_id(keys[0][0], user_id)
+            link = await publish_to_vk_draft(access_token, video_path, title, description, content_type)
+            await bot.send_message(user_id, f"✅ Видео отправлено в черновики VK:\n{link}")
+        
+        elif platform == "telegram":
+            # Для Telegram ключ = bot_token, а название = channel_id
+            channel_id = keys[0][1]  # name = channel_id
+            bot_token = get_api_key_by_id(keys[0][0], user_id)
+            link = await publish_to_telegram_channel(bot_token, channel_id, video_path, title, description)
+            await bot.send_message(user_id, f"✅ Пост отправлен в Telegram:\n{link}")
+    
+    except Exception as e:
+        logger.error(f"Publish error for {user_id}: {e}")
+        await bot.send_message(user_id, f"❌ Ошибка публикации: {str(e)}")
 
+# === ОСНОВНОЙ WORKFLOW ===
 async def process_video_workflow(user_id: int, url: str):
-    """
-    Полный пайплайн обработки видео
-    """
     try:
         video_path = await download_video(url)
         await process_video_from_path(user_id, video_path)
@@ -382,22 +664,13 @@ async def process_video_workflow(user_id: int, url: str):
         logger.error(f"Ошибка в workflow: {e}", exc_info=True)
         raise
 
-
 async def process_video_from_path(user_id: int, video_path: str):
-    """
-    Пайплайн обработки видео (из файла)
-    """
     try:
-        await send_status(user_id, "✅ Видео получено\n2️⃣ Обработка (удаление пауз, транскрипция, проверка)...")
+        await send_status(user_id, "✅ Видео получено\n2️⃣ Обработка...")
         
         settings = get_settings(user_id)
-        
         platforms_val = settings.get("platform", "all")
-        if platforms_val == "all":
-            platforms = ["youtube", "telegram"]
-        else:
-            platforms = [platforms_val]
-        
+        platforms = ["youtube", "telegram"] if platforms_val == "all" else [platforms_val]
         post_format = settings.get("post_format", "neutral")
         custom_prompt = settings.get("custom_prompt")
         
@@ -409,122 +682,61 @@ async def process_video_from_path(user_id: int, video_path: str):
         )
         
         if result.status == "failed":
-            await send_status(
-                user_id,
-                f"❌ Ошибка обработки: {result.error}"
-            )
+            await send_status(user_id, f"❌ Ошибка: {result.error}")
             return
         
         await send_status(user_id, "✅ Обработка завершена!\n\n📊 Результаты:")
         
+        # Отправка контента
         if result.generated_content:
             youtube_data = result.generated_content.get('youtube', {})
+            if youtube_data:
+                policy_check = youtube_data.get('policy_check')
+                if policy_check:
+                    verdict = policy_check.get('verdict', 'UNKNOWN')
+                    confidence = policy_check.get('confidence', 0)
+                    emoji = "✅" if verdict == "ALLOW" else "❌"
+                    text = "соответствует" if verdict == "ALLOW" else "НЕ соответствует"
+                    await bot.send_message(
+                        user_id,
+                        f"{emoji} **Проверка политики:**\nВидео {text} политике YouTube\nУверенность: {confidence:.0%}",
+                        parse_mode='Markdown'
+                    )
+                
+                youtube_content = youtube_data.get('content', {})
+                if youtube_content:
+                    yt_title = youtube_content.get('title', '').strip('"')
+                    yt_desc = youtube_content.get('description', '').strip('"')
+                    yt_tags = youtube_content.get('tags', [])
+                    tags_str = ' '.join(yt_tags) if yt_tags else 'Нет тегов'
+                    await bot.send_message(user_id, f"🎬 YouTube:\n\n{yt_title}\n\n{yt_desc}\n\n{tags_str}")
             
-            # проверка на пользовательское соглашение ютуб
-            policy_check = youtube_data.get('policy_check') if youtube_data else None
-            if policy_check:
-                verdict = policy_check.get('verdict', 'UNKNOWN')
-                confidence = policy_check.get('confidence', 0)
-                
-                if verdict == "ALLOW":
-                    emoji = "✅"
-                    text = "Видео соответствует политике YouTube"
-                else:
-                    emoji = "❌"
-                    text = "Видео НЕ соответствует политике YouTube"
-                
-                await bot.send_message(
-                    user_id,
-                    f"{emoji} **Проверка политики:**\n"
-                    f"{text}\n"
-                    f"Уверенность: {confidence:.0%}",
-                    parse_mode='Markdown'
-                )
-            
-            # сгенерированный контент для ютуб
-            youtube_content = youtube_data.get('content', {})
-            if youtube_content:
-                yt_title = youtube_content.get('title', '').strip('"')
-                yt_desc = youtube_content.get('description', '').strip('"')
-                yt_tags = youtube_content.get('tags', [])
-                
-                tags_str = ' '.join(yt_tags) if yt_tags else 'Нет тегов'
-                
-                await bot.send_message(
-                    user_id,
-                    f"🎬 YouTube контент:\n\n"
-                    f"{yt_title}\n\n"
-                    f"{yt_desc}\n\n"
-                    f"{tags_str}"
-                )
-            
-            # сгенерированный контент для тг (если есть)
             telegram_data = result.generated_content.get('telegram', {})
-            telegram_content = telegram_data.get('content', {}) if telegram_data else {}
-            if telegram_content:
-                tg_title = telegram_content.get('title', '').strip('"')
-                tg_post = telegram_content.get('post', '').strip('"')
-                
-                await bot.send_message(
-                    user_id,
-                    f"📱 Telegram контент:\n\n"
-                    f"**{tg_title}**\n\n"
-                    f"{tg_post}",
-                    parse_mode='Markdown'
-                )
+            if telegram_data:
+                telegram_content = telegram_data.get('content', {})
+                if telegram_content:
+                    tg_title = telegram_content.get('title', '').strip('"')
+                    tg_post = telegram_content.get('post', '').strip('"')
+                    await bot.send_message(user_id, f"📱 Telegram:\n\n**{tg_title}**\n\n{tg_post}", parse_mode='Markdown')
             
-            # обложки
             thumbnails = youtube_data.get('thumbnails', [])
             if thumbnails:
                 try:
                     media_group = []
-                    for i, thumb in enumerate(thumbnails, 1):
+                    for i, thumb in enumerate(thumbnails[:10], 1):
                         thumb_path = thumb.get('path', '')
-                        if thumb_path:
+                        if thumb_path and os.path.exists(thumb_path):
                             media_group.append(
                                 types.InputMediaPhoto(
                                     open(thumb_path, 'rb'),
                                     caption=f"🖼 Обложки ({len(thumbnails)} шт.)" if i == 1 else None
                                 )
                             )
-                    
                     if media_group:
                         await bot.send_media_group(user_id, media_group)
                 except Exception as e:
                     logger.error(f"Ошибка отправки обложек: {e}")
         
-        # транскрибация
-        if result.transcription:
-            # разбиваем на части, если текст более 4096 символов (ограничение тг)
-            # transcription = result.transcription
-            # max_len = 4000  # запас для заголовка
-            
-            # if len(transcription) <= max_len:
-            #     await bot.send_message(
-            #         user_id,
-            #         f"📝 **Транскрибация:**\n\n{transcription}",
-            #         parse_mode='Markdown'
-            #     )
-            # else:
-            #     await bot.send_message(
-            #         user_id,
-            #         f"📝 **Транскрибация (часть 1):**\n\n{transcription[:max_len]}",
-            #         parse_mode='Markdown'
-            #     )
-            #     remaining = transcription[max_len:]
-            #     part = 2
-            #     while remaining:
-            #         chunk = remaining[:max_len]
-            #         remaining = remaining[max_len:]
-            #         await bot.send_message(
-            #             user_id,
-            #             f"📝 **Транскрибация (часть {part}):**\n\n{chunk}",
-            #             parse_mode='Markdown'
-            #         )
-            #         part += 1
-            pass
-        
-        # обработанное видео
         if result.processed_video_path:
             await send_status(user_id, "🎬 Отправляю обработанное видео...")
             try:
@@ -534,24 +746,31 @@ async def process_video_from_path(user_id: int, video_path: str):
                         user_id, 
                         video, 
                         caption="🎬 Видео с обрезанными паузами",
-                        width=width if width else None,
-                        height=height if height else None
+                        width=width or None,
+                        height=height or None
                     )
                 if user_id in user_status_messages:
-                     try:
+                    try:
                         await bot.delete_message(user_id, user_status_messages[user_id])
                         del user_status_messages[user_id]
-                     except Exception:
+                    except:
                         pass
-
             except Exception as e:
                 logger.error(f"Ошибка отправки видео: {e}")
                 await bot.send_message(user_id, f"⚠️ Не удалось отправить видео: {str(e)}")
         
+        # === ПУБЛИКАЦИЯ ===
+        publish_state = user_states.get(user_id, "")
+        if publish_state.startswith("publish_with_"):
+            scenario_id = int(publish_state.split("_")[-1])
+            scenario = get_scenario_by_id(scenario_id, user_id)
+            if scenario:
+                await publish_to_draft(user_id, scenario, result)
+            user_states[user_id] = None
+
     except Exception as e:
         logger.error(f"Ошибка в workflow: {e}", exc_info=True)
         raise
-
 
 if __name__ == "__main__":
     init_db()

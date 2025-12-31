@@ -3,3 +3,7 @@ aiohttp==3.13.2
 yt-dlp==2025.11.12
 httpx==0.28.1
 pydantic==2.12.5
+cryptography==44.0.2
+google-api-python-client==2.159.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
