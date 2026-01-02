@@ -40,6 +40,7 @@ user_states = {}
 user_status_messages = {}
 
 async def send_status(user_id: int, text: str, parse_mode=None):
+    """Отправка и обновление статусных сообщений"""
     try:
         if user_id in user_status_messages:
             try:
@@ -54,6 +55,7 @@ async def send_status(user_id: int, text: str, parse_mode=None):
         return await bot.send_message(user_id, text, parse_mode=parse_mode)
 
 def get_video_dimensions(video_path: str) -> tuple:
+    """Получение размеров видео через ffprobe"""
     try:
         cmd = [
             "ffprobe", "-v", "error",
@@ -69,8 +71,8 @@ def get_video_dimensions(video_path: str) -> tuple:
     except Exception:
         return 0, 0
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ UI ===
 def get_scenarios_menu(user_id):
+    """Создание меню сценариев"""
     scenarios = get_scenarios(user_id)
     markup = types.InlineKeyboardMarkup()
     for s_id, name, platform, content_type, fmt in scenarios:
@@ -84,6 +86,7 @@ def get_scenarios_menu(user_id):
     return markup
 
 def get_api_keys_menu(user_id):
+    """Создание меню API-ключей"""
     keys = get_api_keys(user_id)
     markup = types.InlineKeyboardMarkup()
     for k_id, name, platform in keys:
@@ -97,6 +100,7 @@ def get_api_keys_menu(user_id):
     return markup
 
 def get_settings_ui(user_id):
+    """Создание UI настроек"""
     settings = get_settings(user_id)
     markup = types.InlineKeyboardMarkup()
     
@@ -146,9 +150,9 @@ def get_settings_ui(user_id):
         
     return text, markup
 
-# === КОМАНДЫ ===
 @bot.message_handler(commands=['start'])
 async def start(message):
+    """Обработка команды /start"""
     if message.from_user.is_bot:
         return
     user_id = message.from_user.id
@@ -167,28 +171,30 @@ async def start(message):
 
 @bot.message_handler(commands=['settings'])
 async def settings_command(message):
+    """Обработка команды /settings"""
     if message.from_user.is_bot:
         return
     user_id = message.from_user.id
     text, markup = get_settings_ui(user_id)
     await bot.send_message(user_id, text, reply_markup=markup, parse_mode="Markdown")
 
-# === МЕНЮ КНОПОК ===
 @bot.message_handler(func=lambda msg: msg.text == "🎭 Сценарии")
 async def scenarios_menu(message):
+    """Обработка кнопки Сценарии"""
     user_id = message.from_user.id
     markup = get_scenarios_menu(user_id)
     await bot.send_message(user_id, "🎭 Управление сценариями:", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.text == "🔑 API-ключи")
 async def api_keys_menu(message):
+    """Обработка кнопки API-ключи"""
     user_id = message.from_user.id
     markup = get_api_keys_menu(user_id)
     await bot.send_message(user_id, "🔑 Управление API-ключами:", reply_markup=markup)
 
-# === CALLBACK'И ===
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
 async def back_to_main(call):
+    """Возврат в главное меню"""
     user_id = call.from_user.id
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("🎬 Обработать видео")
@@ -197,9 +203,9 @@ async def back_to_main(call):
     await bot.send_message(user_id, "Главное меню:", reply_markup=markup)
     await bot.answer_callback_query(call.id)
 
-# Сценарии
 @bot.callback_query_handler(func=lambda call: call.data == "create_scenario")
 async def start_create_scenario(call):
+    """Начало создания сценария"""
     user_id = call.from_user.id
     user_states[user_id] = "waiting_scenario_name"
     await bot.send_message(user_id, "✏️ Введите название сценария:")
@@ -207,6 +213,7 @@ async def start_create_scenario(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("select_scenario_"))
 async def select_scenario_for_publish(call):
+    """Выбор сценария для публикации"""
     user_id = call.from_user.id
     scenario_id = int(call.data.split("_")[-1])
     scenario = get_scenario_by_id(scenario_id, user_id)
@@ -227,6 +234,7 @@ async def select_scenario_for_publish(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "delete_scenario")
 async def delete_scenario_start(call):
+    """Начало удаления сценария"""
     user_id = call.from_user.id
     scenarios = get_scenarios(user_id)
     if not scenarios:
@@ -241,15 +249,16 @@ async def delete_scenario_start(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_scenario_"))
 async def confirm_delete_scenario(call):
+    """Подтверждение удаления сценария"""
     user_id = call.from_user.id
     s_id = int(call.data.split("_")[-1])
     delete_scenario(s_id, user_id)
     await bot.send_message(user_id, "🗑 Сценарий удалён.")
     await bot.answer_callback_query(call.id)
 
-# API-ключи
 @bot.callback_query_handler(func=lambda call: call.data == "add_api_key")
 async def start_add_api_key(call):
+    """Начало добавления API-ключа"""
     user_id = call.from_user.id
     user_states[user_id] = "waiting_api_key_name"
     await bot.send_message(user_id, "✏️ Введите название ключа (например: 'Мой YouTube канал'):")
@@ -257,6 +266,7 @@ async def start_add_api_key(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "delete_api_key")
 async def delete_api_key_start(call):
+    """Начало удаления API-ключа"""
     user_id = call.from_user.id
     keys = get_api_keys(user_id)
     if not keys:
@@ -271,18 +281,22 @@ async def delete_api_key_start(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_key_"))
 async def confirm_delete_key(call):
+    """Подтверждение удаления API-ключа"""
     user_id = call.from_user.id
     k_id = int(call.data.split("_")[-1])
     delete_api_key(k_id, user_id)
     await bot.send_message(user_id, "🗑 Ключ удалён.")
     await bot.answer_callback_query(call.id)
 
-# Выбор платформы для сценария
 @bot.callback_query_handler(func=lambda call: call.data.startswith("scen_platform_"))
 async def select_scenario_platform(call):
+    """Выбор платформы для сценария"""
     user_id = call.from_user.id
     platform = call.data.split("_")[-1]
-    name = user_states[user_id][1]
+    if isinstance(user_states[user_id], tuple) and len(user_states[user_id]) >= 2:
+        name = user_states[user_id][1]
+    else:
+        name = ""
     user_states[user_id] = ("waiting_scenario_content_type", name, platform)
     
     content_types = []
@@ -290,7 +304,7 @@ async def select_scenario_platform(call):
         content_types = ["shorts", "video"]
     elif platform == "vk":
         content_types = ["clip"]
-    else:  # telegram
+    else:
         content_types = ["post", "video"]
     
     markup = types.InlineKeyboardMarkup()
@@ -299,12 +313,17 @@ async def select_scenario_platform(call):
     await bot.send_message(user_id, "Выберите тип контента:", reply_markup=markup)
     await bot.answer_callback_query(call.id)
 
-# Выбор типа контента
 @bot.callback_query_handler(func=lambda call: call.data.startswith("scen_ct_"))
 async def select_scenario_content_type(call):
+    """Выбор типа контента для сценария"""
     user_id = call.from_user.id
     content_type = call.data.split("_")[-1]
-    name, platform = user_states[user_id][1], user_states[user_id][2]
+    if isinstance(user_states[user_id], tuple) and len(user_states[user_id]) >= 3:
+        name = user_states[user_id][1]
+        platform = user_states[user_id][2]
+    else:
+        name = ""
+        platform = ""
     user_states[user_id] = ("waiting_scenario_format", name, platform, content_type)
     
     formats = ["warming", "neutral", "selling", "custom"]
@@ -314,44 +333,56 @@ async def select_scenario_content_type(call):
     await bot.send_message(user_id, "Выберите формат:", reply_markup=markup)
     await bot.answer_callback_query(call.id)
 
-# Выбор формата
 @bot.callback_query_handler(func=lambda call: call.data.startswith("scen_fmt_"))
 async def select_scenario_format(call):
+    """Выбор формата для сценария"""
     user_id = call.from_user.id
     fmt = call.data.split("_")[-1]
-    name, platform, content_type = user_states[user_id][1], user_states[user_id][2], user_states[user_id][3]
-    add_scenario(user_id, name, platform, content_type, fmt)
-    await bot.send_message(user_id, "✅ Сценарий сохранён!")
+    if isinstance(user_states[user_id], tuple) and len(user_states[user_id]) >= 4:
+        name = user_states[user_id][1]
+        platform = user_states[user_id][2]
+        content_type = user_states[user_id][3]
+        add_scenario(user_id, name, platform, content_type, fmt)
+        await bot.send_message(user_id, "✅ Сценарий сохранён!")
+    else:
+        await bot.send_message(user_id, "❌ Ошибка: данные сценария повреждены")
     user_states[user_id] = None
     await bot.answer_callback_query(call.id)
 
-# Выбор платформы для ключа
-@bot.callback_query_handler(func=lambda call: call.data.startswith("key_platform_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("key_platform_") and call.data != "key_platform_youtube")
 async def select_api_key_platform(call):
+    """Выбор платформы для API-ключа (кроме YouTube)"""
     user_id = call.from_user.id
     platform = call.data.split("_")[-1]
-    name = user_states[user_id][1]
-    user_states[user_id + "_key_meta"] = (name, platform)
+    if isinstance(user_states[user_id], tuple) and len(user_states[user_id]) >= 2:
+        name = user_states[user_id][1]
+    else:
+        name = ""
+    user_states[str(user_id) + "_key_meta"] = (name, platform)
     user_states[user_id] = "waiting_api_key_value"
     await bot.send_message(user_id, "🔑 Введите API-ключ (токен):")
     await bot.answer_callback_query(call.id)
 
-# === СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ YOUTUBE ===
 @bot.callback_query_handler(func=lambda call: call.data == "key_platform_youtube")
 async def handle_youtube_key(call):
+    """Обработка выбора платформы YouTube для API-ключа"""
     user_id = call.from_user.id
-    name = user_states[user_id][1]
+    if isinstance(user_states[user_id], tuple) and len(user_states[user_id]) >= 2:
+        name = user_states[user_id][1]
+    else:
+        name = ""
     await bot.send_message(
         user_id,
         "📌 Для YouTube требуется JSON с данными OAuth2.\n"
         "Пришлите файл credentials.json или вставьте содержимое JSON."
     )
     user_states[user_id] = "waiting_youtube_json"
-    user_states[user_id + "_key_meta"] = (name, "youtube")
+    user_states[str(user_id) + "_key_meta"] = (name, "youtube")
     await bot.answer_callback_query(call.id)
 
 @bot.message_handler(content_types=['document'], func=lambda msg: user_states.get(msg.from_user.id) == "waiting_youtube_json")
 async def handle_youtube_json_file(message):
+    """Обработка JSON-файла для YouTube"""
     user_id = message.from_user.id
     if not message.document.file_name.endswith('.json'):
         await bot.send_message(user_id, "Пожалуйста, отправьте JSON-файл.")
@@ -361,35 +392,40 @@ async def handle_youtube_json_file(message):
         file_info = await bot.get_file(message.document.file_id)
         downloaded = await bot.download_file(file_info.file_path)
         json_content = downloaded.decode('utf-8')
-        json.loads(json_content)  # проверка валидности
+        json.loads(json_content)
         
-        name, platform = user_states[user_id + "_key_meta"]
-        save_yt_creds(user_id, json_content)
-        add_api_key(user_id, name, platform, "oauth2_refresh_token_saved")
-        await bot.send_message(user_id, "✅ YouTube ключ сохранён!")
-        user_states[user_id] = None
-        user_states.pop(user_id + "_key_meta", None)
+        meta_key = str(user_id) + "_key_meta"
+        if meta_key in user_states:
+            name, platform = user_states[meta_key]
+            save_yt_creds(user_id, json_content)
+            add_api_key(user_id, name, platform, "oauth2_refresh_token_saved")
+            await bot.send_message(user_id, "✅ YouTube ключ сохранён!")
+            user_states[user_id] = None
+            user_states.pop(meta_key, None)
     except Exception as e:
         await bot.send_message(user_id, f"❌ Ошибка: {e}")
 
 @bot.message_handler(func=lambda msg: user_states.get(msg.from_user.id) == "waiting_youtube_json")
 async def handle_youtube_json_text(message):
+    """Обработка текстового JSON для YouTube"""
     user_id = message.from_user.id
     try:
         json_content = message.text
         json.loads(json_content)
-        name, platform = user_states[user_id + "_key_meta"]
-        save_yt_creds(user_id, json_content)
-        add_api_key(user_id, name, platform, "oauth2_refresh_token_saved")
-        await bot.send_message(user_id, "✅ YouTube ключ сохранён!")
-        user_states[user_id] = None
-        user_states.pop(user_id + "_key_meta", None)
+        meta_key = str(user_id) + "_key_meta"
+        if meta_key in user_states:
+            name, platform = user_states[meta_key]
+            save_yt_creds(user_id, json_content)
+            add_api_key(user_id, name, platform, "oauth2_refresh_token_saved")
+            await bot.send_message(user_id, "✅ YouTube ключ сохранён!")
+            user_states[user_id] = None
+            user_states.pop(meta_key, None)
     except Exception as e:
         await bot.send_message(user_id, f"❌ Неверный JSON: {e}")
 
-# Старые настройки
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_platform_'))
 async def callback_platform(call):
+    """Обработка выбора платформы в настройках"""
     user_id = call.from_user.id
     action = call.data.split('_')[2]
     current = get_settings(user_id).get("platform", "all")
@@ -428,6 +464,7 @@ async def callback_platform(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_format_'))
 async def callback_format(call):
+    """Обработка выбора формата в настройках"""
     user_id = call.from_user.id
     new_format = call.data.split('_')[2]
     update_settings(user_id, post_format=new_format)
@@ -447,6 +484,7 @@ async def callback_format(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'set_custom_prompt')
 async def callback_custom_prompt(call):
+    """Обработка установки кастомного промта"""
     user_id = call.from_user.id
     user_states[user_id] = "waiting_prompt"
     await bot.send_message(user_id, "✍️ Напишите инструкцию для генерации текста...")
@@ -454,6 +492,7 @@ async def callback_custom_prompt(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == 'clear_custom_prompt')
 async def callback_clear_prompt(call):
+    """Обработка очистки кастомного промта"""
     user_id = call.from_user.id
     update_settings(user_id, custom_prompt=None)
     
@@ -470,16 +509,15 @@ async def callback_clear_prompt(call):
         logger.debug(f"Message not modified: {e}")
     await bot.answer_callback_query(call.id)
 
-# === ОБРАБОТКА ТЕКСТА ===
 @bot.message_handler(content_types=['text'])
 async def handle_text(message):
+    """Обработка текстовых сообщений"""
     if message.from_user.is_bot:
         return
     user_id = message.from_user.id
     text = message.text.strip()
     state = user_states.get(user_id)
 
-    # Сценарии
     if state == "waiting_scenario_name":
         user_states[user_id] = ("waiting_scenario_platform", text)
         markup = types.InlineKeyboardMarkup()
@@ -491,7 +529,6 @@ async def handle_text(message):
         await bot.send_message(user_id, "Выберите платформу:", reply_markup=markup)
         return
 
-    # API-ключи
     elif state == "waiting_api_key_name":
         user_states[user_id] = ("waiting_api_key_platform", text)
         markup = types.InlineKeyboardMarkup()
@@ -504,7 +541,7 @@ async def handle_text(message):
         return
 
     elif state == "waiting_api_key_value":
-        meta_key = user_id + "_key_meta"
+        meta_key = str(user_id) + "_key_meta"
         if meta_key in user_states:
             name, platform = user_states[meta_key]
             add_api_key(user_id, name, platform, text)
@@ -513,7 +550,6 @@ async def handle_text(message):
             user_states.pop(meta_key, None)
         return
 
-    # Кастомный промт
     elif state == "waiting_prompt":
         update_settings(user_id, custom_prompt=text)
         user_states[user_id] = None
@@ -521,7 +557,6 @@ async def handle_text(message):
         await settings_command(message)
         return
 
-    # Стандартные кнопки
     if text == "⚙️ Настройки":
         await settings_command(message)
     elif text == "🎬 Обработать видео":
@@ -547,9 +582,9 @@ async def handle_text(message):
                 "Попробуйте другую ссылку или обратитесь в поддержку."
             )
 
-# === ОБРАБОТКА ФАЙЛОВ ===
 @bot.message_handler(content_types=['video', 'document'])
 async def handle_video_or_document(message):
+    """Обработка видео и документов"""
     if message.from_user.is_bot:
         return
     user_id = message.from_user.id
@@ -615,20 +650,17 @@ async def handle_video_or_document(message):
         logger.error(f"Ошибка скачивания видео: {e}", exc_info=True)
         await send_status(user_id, f"❌ Не удалось скачать видео: {str(e)}")
 
-# === ФУНКЦИЯ ПУБЛИКАЦИИ ===
 async def publish_to_draft(user_id: int, scenario: dict, result):
-    """Публикует результат по сценарию"""
+    """Публикация видео по сценарию"""
     platform = scenario["platform"]
     content_type = scenario["content_type"]
     
-    # Получаем контент
     content = result.generated_content.get(platform, {}).get("content", {})
     title = content.get("title", "Без названия")[:100]
     description = content.get("description", content.get("post", ""))[:5000]
     tags = content.get("tags", [])
     video_path = result.processed_video_path
     
-    # Получаем ключ
     keys = [k for k in get_api_keys(user_id) if k[2] == platform]
     if not keys:
         await bot.send_message(user_id, f"❌ Нет API-ключа для {platform}. Добавьте в настройках.")
@@ -645,8 +677,7 @@ async def publish_to_draft(user_id: int, scenario: dict, result):
             await bot.send_message(user_id, f"✅ Видео отправлено в черновики VK:\n{link}")
         
         elif platform == "telegram":
-            # Для Telegram ключ = bot_token, а название = channel_id
-            channel_id = keys[0][1]  # name = channel_id
+            channel_id = keys[0][1]
             bot_token = get_api_key_by_id(keys[0][0], user_id)
             link = await publish_to_telegram_channel(bot_token, channel_id, video_path, title, description)
             await bot.send_message(user_id, f"✅ Пост отправлен в Telegram:\n{link}")
@@ -655,8 +686,8 @@ async def publish_to_draft(user_id: int, scenario: dict, result):
         logger.error(f"Publish error for {user_id}: {e}")
         await bot.send_message(user_id, f"❌ Ошибка публикации: {str(e)}")
 
-# === ОСНОВНОЙ WORKFLOW ===
 async def process_video_workflow(user_id: int, url: str):
+    """Основной процесс обработки видео по URL"""
     try:
         video_path = await download_video(url)
         await process_video_from_path(user_id, video_path)
@@ -665,6 +696,7 @@ async def process_video_workflow(user_id: int, url: str):
         raise
 
 async def process_video_from_path(user_id: int, video_path: str):
+    """Обработка видео из файла"""
     try:
         await send_status(user_id, "✅ Видео получено\n2️⃣ Обработка...")
         
@@ -687,7 +719,6 @@ async def process_video_from_path(user_id: int, video_path: str):
         
         await send_status(user_id, "✅ Обработка завершена!\n\n📊 Результаты:")
         
-        # Отправка контента
         if result.generated_content:
             youtube_data = result.generated_content.get('youtube', {})
             if youtube_data:
@@ -759,7 +790,6 @@ async def process_video_from_path(user_id: int, video_path: str):
                 logger.error(f"Ошибка отправки видео: {e}")
                 await bot.send_message(user_id, f"⚠️ Не удалось отправить видео: {str(e)}")
         
-        # === ПУБЛИКАЦИЯ ===
         publish_state = user_states.get(user_id, "")
         if publish_state.startswith("publish_with_"):
             scenario_id = int(publish_state.split("_")[-1])

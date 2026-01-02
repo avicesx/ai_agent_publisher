@@ -8,19 +8,19 @@ from google.oauth2.credentials import Credentials
 
 logger = logging.getLogger(__name__)
 
-# Каталог для хранения credentials (временно)
+# Каталог для хранения credentials
 CREDENTIALS_DIR = "/data/yt_credentials"
 
 os.makedirs(CREDENTIALS_DIR, exist_ok=True)
 
 def save_credentials(user_id: int, token_data: str):
-    """Сохраняет refresh_token и client_id/client_secret (в формате JSON)"""
+    """Сохранение OAuth2 credentials пользователя"""
     path = os.path.join(CREDENTIALS_DIR, f"{user_id}.json")
     with open(path, "w") as f:
         f.write(token_data)
 
 def load_credentials(user_id: int) -> Credentials:
-    """Загружает и обновляет OAuth2 credentials"""
+    """Загрузка и обновление OAuth2 credentials"""
     path = os.path.join(CREDENTIALS_DIR, f"{user_id}.json")
     if not os.path.exists(path):
         raise ValueError("YouTube credentials not found")
@@ -31,7 +31,6 @@ def load_credentials(user_id: int) -> Credentials:
     creds = Credentials.from_authorized_user_info(info)
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        # Сохраняем обновлённый токен
         with open(path, "w") as f:
             f.write(creds.to_json())
     
@@ -45,15 +44,7 @@ async def publish_to_youtube_draft(
     tags: list,
     content_type: str  # 'shorts' или 'video'
 ):
-    """
-    Публикует видео в черновики YouTube
-    Требует: token_data — JSON с полями:
-    {
-      "client_id": "...",
-      "client_secret": "...",
-      "refresh_token": "..."
-    }
-    """
+    """Публикация видео в черновики YouTube"""
     try:
         creds = load_credentials(user_id)
         youtube = build("youtube", "v3", credentials=creds)
@@ -77,7 +68,7 @@ async def publish_to_youtube_draft(
             insert_request = youtube.videos().insert(
                 part=",".join(body.keys()),
                 body=body,
-                media_body=MediaFile_upload(video_path, mimetype="video/quicktime")  # YouTube требует quicktime для Shorts
+                media_body=MediaFileUpload(video_path, mimetype="video/quicktime")
             )
         else:
             insert_request = youtube.videos().insert(
