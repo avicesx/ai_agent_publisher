@@ -1,17 +1,9 @@
 from .generator import (
     load_llm,
-    generate_youtube_title,
-    generate_youtube_description,
-    generate_tags,
-    generate_telegram_title,
-    generate_telegram_post
+    bulk_generate_content
 )
 
 __all__ = [
     "load_llm",
-    "generate_youtube_title",
-    "generate_youtube_description",
-    "generate_tags",
-    "generate_telegram_title",
-    "generate_telegram_post"
+    "bulk_generate_content"
 ]

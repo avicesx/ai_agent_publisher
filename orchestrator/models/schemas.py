@@ -25,3 +25,4 @@ class ProcessRequest(BaseModel):
     platforms: list[str] = ["youtube", "telegram"]
     post_format: str = "neutral"
     custom_prompt: Optional[str] = None
+    pipeline_actions: list[str] = []

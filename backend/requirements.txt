@@ -1,5 +1,6 @@
 pyTelegramBotAPI==4.29.1
 aiohttp==3.13.2
+aiofiles==24.1.0
 yt-dlp==2025.11.12
 httpx==0.28.1
 pydantic==2.12.5

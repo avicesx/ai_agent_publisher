@@ -18,6 +18,7 @@ services:
     container_name: ai_publisher_backend
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - TELEGRAM_API_URL=http://telegram-bot-api:8081
       - ORCHESTRATOR_URL=http://orchestrator:8000
       - UPLOAD_DIR=/data/uploads
@@ -120,6 +121,7 @@ services:
       - N_CTX=4096
       - N_THREADS=6
       - LOG_LEVEL=INFO
+      - MODEL_PATH=/app/llm_models/qwen2.5-1.5b-instruct-q4_k_m.gguf
       - N_GPU_LAYERS=-1
       - NVIDIA_VISIBLE_DEVICES=0
     volumes:

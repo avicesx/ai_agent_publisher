@@ -15,7 +15,7 @@ class OrchestratorClient:
         self.base_url = config.ORCHESTRATOR_URL
         self.timeout = config.HTTP_TIMEOUT
     
-    async def process_video(self, video_path: str, platforms: list[str] = None, post_format: str = "neutral", custom_prompt: str = None) -> ProcessingResult:
+    async def process_video(self, video_path: str, platforms: list[str] = None, post_format: str = "neutral", custom_prompt: str = None, pipeline_actions: list[str] = None) -> ProcessingResult:
         """
         Отправить видео на обработку в оркестратор
         Args:
@@ -23,14 +23,16 @@ class OrchestratorClient:
             platforms: Список платформ ["youtube", "telegram"]
             post_format: Формат поста
             custom_prompt: Кастомный промт
+            pipeline_actions: Список действий
         Returns:
             ProcessingResult с результатами обработки
         """
-        logger.info(f"Отправка видео на обработку: {video_path}, platforms={platforms}")
+        logger.info(f"Отправка видео на обработку: {video_path}, platforms={platforms}, pipeline_actions={pipeline_actions}")
         
         payload = {
             "video_path": video_path,
-            "post_format": post_format
+            "post_format": post_format,
+            "pipeline_actions": pipeline_actions or []
         }
         if platforms:
             payload["platforms"] = platforms
@@ -65,29 +67,3 @@ class OrchestratorClient:
                 error=str(e)
             )
     
-    async def get_status(self, job_id: str) -> ProcessingResult:
-        """
-        Проверить статус обработки
-        
-        не используется, может пригодиться для отладки
-
-        Args:
-            job_id: ID задачи
-        Returns:
-            ProcessingResult с текущим статусом
-        """
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.base_url}/status/{job_id}"
-                )
-                response.raise_for_status()
-                return ProcessingResult(**response.json())
-                
-        except Exception as e:
-            logger.error(f"Ошибка получения статуса: {e}")
-            return ProcessingResult(
-                job_id=job_id,
-                status="failed",
-                error=str(e)
-            )

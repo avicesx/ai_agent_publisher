@@ -5,8 +5,8 @@ from services.platforms import YouTubePolicyService
 
 CHECKERS: Dict[str, Type[BasePolicyChecker]] = {
     "youtube": YouTubePolicyService,
-    # "rutube": RutubePolicyService, # на будущее
-    # "vk": VKPolicyService, # на будущее
+    # "rutube": RutubePolicyService,
+    # "vk": VKPolicyService
 }
 
 

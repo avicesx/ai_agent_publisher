@@ -33,7 +33,7 @@ class YouTubePolicyChecker:
         self.weight_tiny2 = weight_tiny2
         self.weight_base = weight_base
 
-        logger.info("Загружаем модели...")
+        logger.info("Загрузка моделей checking terms...")
         self.model1 = AutoModelForSequenceClassification.from_pretrained(tiny2_path)
         self.tokenizer1 = AutoTokenizer.from_pretrained(tiny2_path)
 
@@ -42,7 +42,7 @@ class YouTubePolicyChecker:
 
         self.model1.eval()
         self.model2.eval()
-        logger.info("✅ Модели загружены")
+        logger.info("✅ Модели для checking terms загружены")
 
     def predict(self, text: str) -> Dict[str, any]:
         """

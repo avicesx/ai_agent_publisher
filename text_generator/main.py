@@ -5,11 +5,7 @@ import config
 from models import GenerateRequest, GenerateResponse, YouTubeContent, TelegramContent
 from services import (
     load_llm,
-    generate_youtube_title,
-    generate_youtube_description,
-    generate_tags,
-    generate_telegram_title,
-    generate_telegram_post
+    bulk_generate_content
 )
 
 logging.basicConfig(
@@ -30,7 +26,7 @@ async def startup_event():
     """Загрузка LLM при старте сервиса"""
     logger.info("Запуск Text Generator...")
     load_llm()
-    logger.info("Сервис готов к работе")
+    logger.info("Text Generator готов к работе")
 
 
 @app.post("/generate", response_model=GenerateResponse)
@@ -46,25 +42,36 @@ async def generate_content(request: GenerateRequest):
     try:
         logger.info(f"Генерация контента, формат: {request.post_format}, платформы: {request.platforms}")
         
+        generated_data = bulk_generate_content(
+            request.transcript, 
+            request.platforms, 
+            request.post_format, 
+            request.custom_prompt
+        )
+        
         youtube = None
         telegram = None
 
-        if "youtube" in request.platforms:
-            # генерация YouTube контента
+        if "youtube" in request.platforms and generated_data.get("youtube"):
+            yt = generated_data["youtube"]
             youtube = YouTubeContent(
-                title=generate_youtube_title(request.transcript, request.post_format, request.custom_prompt),
-                description=generate_youtube_description(request.transcript, request.post_format, request.custom_prompt),
-                tags=generate_tags(request.transcript)
+                title=yt.get("title", ""),
+                description=yt.get("description", ""),
+                tags=yt.get("tags", [])
             )
         
-        if "telegram" in request.platforms:
-            # генерация Telegram контента
+        if "telegram" in request.platforms and generated_data.get("telegram"):
+            tg = generated_data["telegram"]
             telegram = TelegramContent(
-                title=generate_telegram_title(request.transcript, request.post_format, request.custom_prompt),
-                post=generate_telegram_post(request.transcript, request.post_format, request.custom_prompt)
+                title=tg.get("title", ""),
+                post=tg.get("post", "")
             )
         
+        if youtube or telegram:
         logger.info("Контент успешно сгенерирован")
+        else:
+            logger.warning("Контент не был сгенерирован для выбранных платформ")
+        
         return GenerateResponse(youtube=youtube, telegram=telegram)
         
     except Exception as e:

@@ -43,7 +43,7 @@ class SilenceCutter:
         Returns:
             Путь к обработанному видео без пауз
         """
-        logger.info(f"Начало обработки: {input_path}")
+        logger.info(f"Начало удаления пауз: {input_path}")
         audio_path = extract_audio(input_path)
         
         segments = self._find_non_silent_chunks(audio_path)

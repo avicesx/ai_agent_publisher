@@ -6,173 +6,153 @@ from models import Job, JobStatus
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_POLICY_PLATFORMS = {"youtube", "vk", "rutube"}
 
-async def process_pipeline(job: Job, input_path: Path, platforms: list[str] = ["youtube", "telegram"], post_format: str = "neutral", custom_prompt: str = None) -> Job:
+
+def _normalize_policy_platform(platform: str) -> str:
     """
-    Полный пайплайн обработки видео
-    
-    Args:
-        job: Объект задачи
-        input_path: Путь к входному видео
-        platforms: Список платформ для генерации
-        post_format: Формат поста
-        custom_prompt: Пользовательский промт
-    Returns:
-        Обновленный объект Job с результатами
+    Приводит платформу к поддерживаемой checking_terms.
+    Если платформа не поддерживается (например, telegram),
+    используем youtube как дефолтную политику.
     """
-    logger.info(f"Запрос {job.id}: запуск пайплайна для {input_path}, платформы: {platforms}")
+    if platform in SUPPORTED_POLICY_PLATFORMS:
+        return platform
+    return "youtube"
+
+
+async def process_pipeline(job: Job, input_path: Path, platforms: list[str] = ["youtube", "telegram"], post_format: str = "neutral", custom_prompt: str = None, pipeline_actions: list[str] = None) -> Job:
+    """
+    Полный пайплайн обработки видео с поддержкой выборочного выполнения шагов
+    """
+    logger.info(f"Запрос {job.id}: запуск пайплайна для {input_path}, платформы: {platforms}, действия: {pipeline_actions}")
     
+    if not pipeline_actions:
+        pipeline_actions = ["cut_silence", "transcribe", "check_policy", "generate_content", "generate_thumbnails"]
+
     try:
         job.status = JobStatus.PROCESSING
         job.message = "Начало обработки..."
 
         async with httpx.AsyncClient(timeout=config.HTTP_TIMEOUT) as client:
-            # Silence Cutter
-            logger.info(f"Запрос {job.id}: вызов Silence Cutter...")
-            job.message = "Удаление пауз..."
+            processed_video_path = str(input_path)
             
-            try:
-                silence_response = await client.post(
-                    f"{config.SILENCE_CUTTER_URL}/process_file",
-                    json={"file_path": str(input_path)}
-                )
-                silence_response.raise_for_status()
-            except httpx.RequestError as e:
-                raise Exception(f"Сервис Silence_cutter недоступен: {e}")
+            # 1. Silence Cutter
+            if "cut_silence" in pipeline_actions:
+                job.message = "Удаление пауз..."
+                try:
+                    silence_response = await client.post(
+                        f"{config.SILENCE_CUTTER_URL}/process_file",
+                        json={"file_path": str(input_path)}
+                    )
+                    silence_response.raise_for_status()
+                    processed_video_path = silence_response.json()["output_path"]
+                except Exception as e:
+                    logger.error(f"Silence Cutter: ошибка {e}")
             
-            processed_video_path = silence_response.json()["output_path"]
-            logger.info(f"Запрос {job.id}: Silence Cutter завершен: {processed_video_path}")
+            # 2. Transcriber
+            transcription_text = ""
+            if any(a in pipeline_actions for a in ["transcribe", "generate_content", "publish"]):
+                logger.info(f"Запрос {job.id}: вызов Transcriber (нужен для: {[a for a in ['transcribe', 'generate_content', 'publish'] if a in pipeline_actions]})")
+                job.message = "Транскрибация..."
+                try:
+                    transcriber_response = await client.post(
+                        f"{config.TRANSCRIBER_URL}/transcribe",
+                        json={"file_path": processed_video_path}
+                    )
+                    transcriber_response.raise_for_status()
+                    transcription_text = transcriber_response.json()["text"]
+                    logger.info(f"Запрос {job.id}: Транскрибация получена, длина: {len(transcription_text)}")
+                except Exception as e:
+                    logger.error(f"Транскрибер: ошибка {e}")
+                    transcription_text = "Ошибка транскрибации"
             
-            # Transcriber
-            logger.info(f"Запрос {job.id}: вызов Transcriber...")
-            job.message = "Транскрибация..."
-            
-            try:
-                transcriber_response = await client.post(
-                    f"{config.TRANSCRIBER_URL}/transcribe",
-                    json={"file_path": processed_video_path}
-                )
-                transcriber_response.raise_for_status()
-            except httpx.RequestError as e:
-                raise Exception(f"Сервис Transcriber недоступен: {e}")
-            
-            transcription_text = transcriber_response.json()["text"]
-            logger.info(f"Запрос {job.id}: Transcriber завершен")
-            
-            transcription_file = config.PROCESSED_DIR / f"{job.id}_transcription.txt"
-            with open(transcription_file, "w", encoding="utf-8") as f:
-                f.write(transcription_text)
-            
-            # Checking Terms (транскрипт)
-            check_platform = platforms[0] if platforms else "youtube"
-            
-            logger.info(f"Запрос {job.id}: Проверка транскрипта (для {check_platform})...")
-            job.message = "Проверка транскрипта..."
-            
-            try:
-                transcript_check_response = await client.post(
-                    f"{config.CHECKING_TERMS_URL}/check_policy",
-                    json={
-                        "file_path": str(transcription_file),
-                        "platform": check_platform
-                    }
-                )
-                transcript_check_response.raise_for_status()
-            except httpx.RequestError as e:
-                raise Exception(f"Сервис Checking Terms недоступен: {e}")
-            
-            transcript_check = transcript_check_response.json()
-            job.transcript_check = transcript_check
-            logger.info(f"Запрос {job.id}: Проверка транскрипта: {transcript_check['verdict']}")
-            
-            if transcript_check.get("verdict") == "rejected":
-                logger.warning(f"Запрос {job.id}: Транскрипт не соответствует политике")
-            
-            # Text Generator
-            logger.info(f"Запрос {job.id}: Вызов Text Generator...")
-            job.message = "Генерация контента..."
-            
-            try:
-                text_gen_response = await client.post(
-                    f"{config.TEXT_GENERATOR_URL}/generate",
-                    json={
-                        "transcript": transcription_text,
-                        "post_format": post_format,
-                        "custom_prompt": custom_prompt,
-                        "platforms": platforms
-                    }
-                )
-                text_gen_response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Ошибка HTTP Status Text Generator: {e.response.text}")
-                raise
-            except httpx.RequestError as e:
-                raise Exception(f"Сервис Text Generator недоступен: {e}")
-            
-            generated = text_gen_response.json()
-            logger.info(f"Запрос {job.id}: Text Generator завершен")
-            
+            # 3. Checking terms
+            if "check_policy" in pipeline_actions and transcription_text:
+                # выбираем первую поддерживаемую платформу для политики
+                base_platform = None
+                for p in platforms or []:
+                    if p in SUPPORTED_POLICY_PLATFORMS:
+                        base_platform = p
+                        break
+                check_platform = _normalize_policy_platform(base_platform or "youtube")
+                logger.info(f"Запрос {job.id}: Проверка транскрипта...")
+                job.message = "Проверка политики..."
+                
+                tmp_file = config.PROCESSED_DIR / f"{job.id}_transcript.txt"
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    f.write(transcription_text)
+
+                try:
+                    transcript_check_response = await client.post(
+                        f"{config.CHECKING_TERMS_URL}/check_policy",
+                        json={"file_path": str(tmp_file), "platform": check_platform}
+                    )
+                    job.transcript_check = transcript_check_response.json()
+                except Exception as e:
+                    logger.error(f"Проверка политики: ошибка {e}")
+
+            # 4. Text generator
+            generated = {}
+            if any(a in pipeline_actions for a in ["generate_content", "publish"]) and transcription_text:
+                logger.info(f"Запрос {job.id}: Вызов Text Generator...")
+                job.message = "Генерация контента..."
+                try:
+                    text_gen_response = await client.post(
+                        f"{config.TEXT_GENERATOR_URL}/generate",
+                        json={
+                            "transcript": transcription_text,
+                            "post_format": post_format,
+                            "custom_prompt": custom_prompt,
+                            "platforms": platforms
+                        }
+                    )
+                    text_gen_response.raise_for_status()
+                    generated = text_gen_response.json()
+                    logger.info(f"Запрос {job.id}: Text Generator вернул ключи: {list(generated.keys())}")
+                except Exception as e:
+                    logger.error(f"Text Generator: ошибка {e}")
+
             job.generated_content = {}
             
-            # YouTube Flow
-            if "youtube" in platforms and generated.get("youtube"):
-                logger.info(f"Запрос {job.id}: Проверка YouTube контента...")
-                job.message = "Проверка YouTube контента..."
+            # 5. Platform specific, Thumbnails
+            for platform in platforms:
+                platform_data = {}
                 
-                youtube_content = generated["youtube"]
-                youtube_text = f"{youtube_content['title']}\n{youtube_content['description']}\n{' '.join(youtube_content['tags'])}"
+                if any(a in pipeline_actions for a in ["generate_content", "publish"]) and platform in generated and generated[platform] is not None:
+                    platform_data["content"] = generated[platform]
+                    
+                    if "check_policy" in pipeline_actions:
+                        platform_content = generated[platform]
+                        if isinstance(platform_content, dict):
+                            text_to_check = f"{platform_content.get('title', '')} {platform_content.get('description', '')}"
+                        try:
+                                policy_platform = _normalize_policy_platform(platform)
+                            check_res = await client.post(
+                                f"{config.CHECKING_TERMS_URL}/check_policy",
+                                    json={"text": text_to_check, "platform": policy_platform}
+                            )
+                            platform_data["policy_check"] = check_res.json()
+                        except Exception as e:
+                            logger.debug(f"Проверка политики пропущена для {platform}: {e}")
+
+                if platform == "youtube" and "generate_thumbnails" in pipeline_actions:
+                    logger.info(f"Задание {job.id}: Генерация обложек...")
+                    try:
+                        thumb_res = await client.post(
+                            f"{config.THUMBNAIL_GENERATOR_URL}/generate_thumbnails",
+                            json={"video_path": processed_video_path, "n_thumbnails": 3}
+                        )
+                        platform_data["thumbnails"] = thumb_res.json()["thumbnails"]
+                    except Exception as e:
+                        logger.debug(f"Генерация обложек пропущена: {e}")
                 
-                try:
-                    youtube_check_response = await client.post(
-                        f"{config.CHECKING_TERMS_URL}/check_policy",
-                        json={
-                            "text": youtube_text,
-                            "platform": "youtube"
-                        }
-                    )
-                    youtube_check_response.raise_for_status()
-                    youtube_check = youtube_check_response.json()
-                except Exception as e:
-                    logger.error(f"Ошибка проверки YouTube: {e}")
-                    youtube_check = {"verdict": "error", "reason": str(e)}
+                if platform_data:
+                    job.generated_content[platform] = platform_data
 
-                # Thumbnail Generator
-                logger.info(f"Задание {job.id}: Генерация обложек...")
-                job.message = "Генерация обложек..."
-                
-                thumbnails_data = []
-                try:
-                    thumbnail_response = await client.post(
-                        f"{config.THUMBNAIL_GENERATOR_URL}/generate_thumbnails",
-                        json={
-                            "video_path": processed_video_path,
-                            "n_thumbnails": 3
-                        }
-                    )
-                    thumbnail_response.raise_for_status()
-                    thumbnails_data = thumbnail_response.json()["thumbnails"]
-                except Exception as e:
-                    logger.error(f"Ошибка генерации обложек: {e}")
-
-                job.generated_content["youtube"] = {
-                    "content": youtube_content,
-                    "policy_check": youtube_check,
-                    "thumbnails": thumbnails_data
-                }
-
-            # Telegram Flow
-            if "telegram" in platforms and generated.get("telegram"):
-                logger.info(f"Запрос {job.id}: Обработка Telegram контента...")
-                job.generated_content["telegram"] = {
-                    "content": generated["telegram"]
-                }
-            
             job.video_path = processed_video_path
-            job.text = transcription_text
+            job.text = transcription_text if "transcribe" in pipeline_actions else None
             job.status = JobStatus.COMPLETED
-            job.message = "Пайплайн успешно завершен"
-            logger.info(f"Запрос {job.id}: Пайплайн завершен успешно")
-            
+            job.message = "Обработка завершена успешно"
             return job
 
     except Exception as e:
